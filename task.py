@@ -1,14 +1,15 @@
 import traceback
 from PySide2.QtCore import QObject, Signal
-from PySide2.QtWidgets import QAction, QApplication, QHBoxLayout, QLabel, QMenu, QWidget
+from PySide2.QtWidgets import QAction, QApplication, QHBoxLayout, QLabel, QMenu, QVBoxLayout, QWidget
 
 from enum import Enum
 
 class Status(Enum):
-    DISABLED = 0
+    DISABLED = -1
+    DONE = 0
     ENABLED = 1
-    RUNNING = 2
-    DONE = 3
+    QUEUE = 2
+    RUNNING = 3
     ERROR = 4
 
 class StatusIcon(QLabel):
@@ -36,6 +37,7 @@ class StatusIcon(QLabel):
             self.setStyleSheet("background-color:Green;")
         elif status == "ERROR":
             self.setStyleSheet("background-color:Red;")
+        QApplication.processEvents() 
 
 class Command(QObject):
     stateChanged = Signal(str)
@@ -51,13 +53,9 @@ class Command(QObject):
         self.state = state
         self.stateChanged.emit(self.state)
 
-    def disable(self):
-        self.setState("DISABLED")
-
     def run(self):
         if not self.state == "DISABLED":
             self.setState("RUNNING")
-            QApplication.processEvents() 
             try:
                 if isinstance(self.command, str):
                     exec(self.command)
@@ -76,14 +74,21 @@ class BaseTask(QWidget):
         
         self.mainLayout = QHBoxLayout(self)
         self.mainLayout.setContentsMargins(1,1,1,1)
-        self.status = StatusIcon()
+        self.icon = StatusIcon()
         self.title = QLabel()
 
-        for w in (self.status, self.title):
+        for w in (self.icon, self.title):
             self.mainLayout.addWidget(w)
             
         self.setTitle(title)
         self.setInfo(info)
+
+    @property
+    def status(self):
+        return self.icon.status
+
+    def setIcon(self, status):
+        return self.icon.setStatus(status)
 
     def setTitle(self, title):
         self.title.setText(title)
@@ -91,6 +96,40 @@ class BaseTask(QWidget):
     def setInfo(self, info):
         self.info = info
         self.setToolTip(info)
+
+    def enable(self):
+        self.setIcon("ENABLED")
+
+    def disable(self):
+        self.setIcon("DISABLED")
+
+    def run(self):
+        self.setIcon("RUNNING")
+
+    def contextMenuEvent(self, event):
+        contextMenu = QMenu(self)
+        enable = QAction("Enable")
+        disable = QAction("Disable")
+        run = QAction("Run")
+        copyError = QAction("Copy Error Message")
+        if self.status == "DISABLED":
+            contextMenu.addAction(enable)
+        else:
+            contextMenu.addAction(disable)
+            contextMenu.addAction(run)
+        
+        if self.status == "ERROR":
+            contextMenu.addAction(copyError)
+
+        action = contextMenu.exec_(self.mapToGlobal(event.pos()))
+        if action == enable:
+            self.enable()
+        elif action == disable:
+            self.disable()
+        elif action == run:
+            self.run()
+        elif action == copyError:
+            print("COPY")
 
 class SingleTask(BaseTask):
     def __init__(self, title="", command="", info="", parent=None, **kwargs):
@@ -101,39 +140,19 @@ class SingleTask(BaseTask):
 
     def setCommand(self, command):
         self.command = Command(command)
-        self.command.stateChanged.connect(self.status.setStatus)
+        self.command.stateChanged.connect(self.setIcon)
         self.command.onError.connect(self.onError)
-        self.status.update()
 
     def onError(self, errorMsg):
         self.setToolTip(
             self.info + "\n" + "Error:" + "\n" + errorMsg
         )
         
-    def contextMenuEvent(self, event):
-        contextMenu = QMenu(self)
-        enable = QAction("Enable")
-        disable = QAction("Disable")
-        run = QAction("Run")
-        copyError = QAction("Copy Error Message")
-        if self.command.state == "DISABLED":
-            contextMenu.addAction(enable)
-        else:
-            contextMenu.addAction(disable)
-            contextMenu.addAction(run)
-        
-        if self.command.state == "ERROR":
-            contextMenu.addAction(copyError)
+    def enable(self):
+        self.command.setState("ENABLED")
 
-        action = contextMenu.exec_(self.mapToGlobal(event.pos()))
-        if action == enable:
-            self.command.setState("ENABLED")
-        elif action == disable:
-            self.command.setState("DISABLED")
-        elif action == run:
-            self.run()
-        elif action == copyError:
-            print("COPY")
+    def disable(self):
+        self.command.setState("DISABLED")
 
     def run(self):
         self.setToolTip(self.info)
@@ -158,18 +177,27 @@ class GroupTask(BaseTask):
         return self.tasks
 
     def checkStatus(self, status=None):
+        self.setIcon(max(task.status for task in self.tasks))
+
+    def enable(self):
         for task in self.tasks:
-            ...
+            task.command.setState("ENABLED")
+
+    def disable(self):
+        for task in self.tasks:
+            task.command.setState("DISABLED")
 
     def run(self):
-        self.setToolTip(self.info)
-        self.command.run()
-
+        for task in self.tasks:
+            task.run()
 
 if __name__ == "__main__":
     apps = QApplication()
+
+    w = QWidget()
+    v = QVBoxLayout(w)
     task = SingleTask(**{
-                    "title":"Task",
+                    "title":"Working Task",
                     "info":"Task Tooltip"
                 })
     task.setCommand("""
@@ -179,7 +207,26 @@ for i in range(5):
     print(i)
     time.sleep(1)
     if i == 4:
+        print('Task 1 Done')
+    """)
+
+    task2 = SingleTask(**{
+                    "title":"Error Task",
+                    "info":"Task Tooltip"
+                })
+    task2.setCommand("""
+import time
+
+for i in range(5):
+    print(i)
+    time.sleep(1)
+    if i == 4:
         raise Exception
     """)
-    task.show()
+    group = GroupTask(title="Group Task")
+    group.addTask(task)
+    group.addTask(task2)
+    for wg in (group, task, task2):
+        v.addWidget(wg)
+    w.show()
     apps.exec_()
